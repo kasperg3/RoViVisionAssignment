@@ -169,7 +169,7 @@ void SamplePlugin::btnPressed() {
         log().info() << "Button 1\n";
         // Toggle the timer on and off
         if (!_timer->isActive())
-            _timer->start(2000); // run 10 Hz
+            _timer->start(100); // run 10 Hz
         else
             _timer->stop();
     } else if(obj==_spinBox){
@@ -272,7 +272,7 @@ void addDq(Q &q, Eigen::VectorXf d_q ){
 
  void algorithm2(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, vector<vector<double>> desired){
     //init:
-    double displacementEpsilon = 0.01;
+    double displacementEpsilon = 1;
     Eigen::VectorXf error(2);
     Frame* camFrame = _wc->findFrame("CameraSim");
     Frame* worldFrame = _wc->findFrame("WORLD");
@@ -351,6 +351,9 @@ vector<vector<double>> readMatFromFile(string str){
    return Numbers;
 }
 
+int i = 0;
+
+
 void SamplePlugin::timer() {
     if (_framegrabber != NULL) {
         // Get the image as a RW image
@@ -369,25 +372,27 @@ void SamplePlugin::timer() {
         unsigned int maxW = 400;
         unsigned int maxH = 800;
         _label->setPixmap(p.scaled(maxW,maxH,Qt::KeepAspectRatio));
+
+
+
     }
+
+
+    Device::Ptr devicePA10 = _wc->findDevice("PA10");
+    MovableFrame* markerFrame = _wc->findFrame<MovableFrame>("Marker");
 
     //Create lua files to execute simulation
     vector<vector<double>> markerMotionSlow = readMatFromFile("/home/kasper/RWworkspace/SamplePluginPA10/motions/MarkerMotionSlow.txt");
 
     //writeLuaFile(markerMotionSlow, "");
 
-    State state = _wc->getDefaultState();
-    Device::Ptr devicePA10 = _wc->findDevice("PA10");
-    Q q_start = Q(7, 0, -0.65,0,1.80,0,0.42,0);
-    //Q q_start = Q(7, 0, -0.651, -0.231, 1.761, 0, 0.42, 0);
-    devicePA10->setQ(q_start,state);
-    Q q = devicePA10->getQ(state);
-
 
     //Find new q with newton raphson (algorithm 2 in robotics notes) automaticallu sets Q
+    algorithm2(devicePA10, _state, _wc, markerMotionSlow);
+    markerFrame->setTransform(getTFromMat(markerMotionSlow,i),_state);
 
-    algorithm2(devicePA10, state, _wc, markerMotionSlow);
-
+    getRobWorkStudio()->setState(_state);
+    i++;
 }
 
 void SamplePlugin::stateChangedListener(const State& state) {
