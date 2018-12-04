@@ -199,64 +199,29 @@ void TTMatrix(Transform3D<> T, Eigen::MatrixXf &m){
         }
     }
 }
-void getError(vector<vector<double>> vec, Transform3D<> current, Eigen::VectorXf &error, Transform3D<> camTWorld){
-
+void getError(Eigen::VectorXf &error, Transform3D<> cTM){
 
     double f = 823;
-    double x = current.P()[0];
-    double y = current.P()[1];
-    double z = current.P()[2];
-
-    cout << "x: " << x << endl;
-    cout << "y: " << y << endl;
-
-
-    Transform3D<> markerInWorld = getTFromMat(vec,0);
-    Transform3D<> desired = camTWorld*markerInWorld;
-
-    cout << "Transform current: " << current << endl;
-    cout << "Transform desired: " << desired << endl;
-
-    //Desired - current
-    Vector3D<> dP = desired.P()-current.P();
-    double dX = dP[0];
-    double dY = dP[1];
-    double dZ = dP[2];
-
-    double dThetaZ = 0.5 * ((desired(2,1) * current(1,2)) - (desired(1,2) * (current(2,1))));
-    double dThetaY = 0.5 * ((desired(0,2) * current(2,0)) - (desired(2,0) * (current(0,2))));
-    double dThetaX = 0.5 * ((desired(1,0) * current(0,1)) - (desired(0,1) * (current(1,0))));
+    double x = cTM.P()[0];
+    double y = cTM.P()[1];
+    double z = 0.5;
 
     double u = (f*x)/z;
     double v = (f*y)/z;
 
-    cout << "dX: " << dX << endl;
-    cout << "dY: " << dY << endl;
-    cout << "dZ: " << dZ << endl;
-    cout << "dthetaX: " << dThetaX << endl;
-    cout << "dthetaY: " << dThetaY << endl;
-    cout << "dthetaZ: " << dThetaZ << endl;
-
-
-    double du = (-(f/z)*dX) + ((u/z)*dZ) + (((u*v)/f)*dThetaX) - ((pow(f,2) + pow(u,2))/f)*dThetaY + v*dThetaZ;
-    double dv = (-(f/z)*dY) + ((v/z)*dZ) + ((pow(f,2) + pow(v,2))/f)*dThetaX - (((u*v)/f)*dThetaY) - u*dThetaZ;
-
-    //double du = (f/z)*(-dX-z*dThetaY+y*dThetaZ)-((f*x)/pow(z,2))*(-dZ-y*dThetaX+x*dThetaY);
-    //double dv = (f/z)*(-dY-x*dThetaZ+z*dThetaX)-((f*y)/pow(z,2))*(-dZ-y*dThetaX+x*dThetaY);
-
-    error(0) = du;
-    error(1) = dv;
-
-
+    error(0) = u;
+    error(1) = v;
 }
 
-void makeS(Rotation3D<> R, Eigen::MatrixXf &S){
+Eigen::MatrixXf makeS(Rotation3D<> R){
+    Eigen::MatrixXf S = Eigen::MatrixXf::Zero(6,6);
     for(int i = 0; i < 3; i++){
         for(int j = 0; j < 3; j++){
-            S(j,i) = R(i,j);
-            S(j+3,i+3) = R(i,j);
+            S(i,j) = R(i,j);
+            S(i+3,j+3) = R(i,j);
         }
     }
+    return S.transpose();
 }
 
 void getImageJacobian(Transform3D<> camTrans, Eigen::MatrixXf &Jimg){
@@ -305,102 +270,69 @@ void addDq(Q &q, Eigen::VectorXf d_q ){
 }
 
 
- Q algorithm2(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, vector<vector<double>> desired){
+ void algorithm2(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, vector<vector<double>> desired){
     //init:
-    double displacementEpsilon = 10;
-    Q q = device->getQ(state);
-    Eigen::VectorXf Dq(7);
-    Eigen::MatrixXf A(2,7);
+    double displacementEpsilon = 0.01;
+    Eigen::VectorXf error(2);
+    Frame* camFrame = _wc->findFrame("CameraSim");
+    Frame* worldFrame = _wc->findFrame("WORLD");
+    Frame* markerFrame = _wc->findFrame("Marker");
     Eigen::MatrixXf J(6,7);
-    Eigen::MatrixXf JImage(2,6);
-    Eigen::VectorXf Du(2);
-    Eigen::MatrixXf S = Eigen::MatrixXf::Zero(6,6);
-    Frame* worldFrame = _wc->getWorldFrame();
-    MovableFrame* camFrame =(MovableFrame*) _wc->findFrame("CameraSim");
-    Frame* baseFrame = device->getBase();
-    MovableFrame* markerFrame = _wc->findFrame<MovableFrame>("Marker");
-    Transform3D<> current = Kinematics::frameTframe(camFrame, markerFrame, state);
-    Transform3D<> cTw = Kinematics::frameTframe(camFrame,worldFrame, state);
+    Eigen::MatrixXf S(6,6);
+    Eigen::MatrixXf JImg(2,6);
+    Eigen::MatrixXf A(2,7);
+    Eigen::VectorXf dq(7);
+    Q q = device->getQ(state);
 
-    for(int i = 0; i < 7; i++){
-        cout << "first q" << i << " " << q(i) << endl;
-    }
+    //
+    Transform3D<> cTW = camFrame->fTf(worldFrame, state);
+    Transform3D<> cTM = camFrame->fTf(markerFrame, state);
 
     //1: Compute difference d_u in current and Desired
+    getError(error, cTM);
+    cout << "--------------START--------------" << endl;
+    cout << "Error: " << error(0) << ", " << error(1) << endl;
+    //2:while difference d_u is > epsilon, do:
+    //for(int i = 0; i < 3; i++){
+    while(error.norm() > displacementEpsilon){
 
-    getError(desired, current, Du, cTw);
-    cout << "Du: " << Du(0) << " & " << Du(1) << endl;
-    //2: while difference d_u is > epsilon, do:
-    //while( Du.norm() > displacementEpsilon){
-    for(int x = 0; x < 10; x++){
-        cout << "--------------------------" << endl;
-        cout << "Norm of Du: " << Du.norm() << endl;
+        cTW = camFrame->fTf(worldFrame, state);
 
+        cout << "----------------------------" << endl;
         //3: compute J(q)
-
         Jacobian tmpJ = device->baseJframe(camFrame,state);
-        //Make Jacobian to Eigen matrix
-
         JTMatrix(tmpJ,J);
-        cout <<"J: " << J << endl;
 
-        //Compute J Img
-        Transform3D<> camTMarker = Kinematics::frameTframe(camFrame, markerFrame, state);
-        getImageJacobian(camTMarker, JImage);
-        cout <<"Jimg: " << JImage << endl;
+        //Compute S
+        S = makeS(device->baseTframe(camFrame,state).R());
 
+        //Compute J image
+        getImageJacobian(camFrame->fTf(markerFrame,state),JImg);
 
-        //Compute S(q)
-        Frame* baseFrame = device->getBase();
-        Transform3D<> baseTCam = Kinematics::frameTframe(baseFrame,camFrame, state);
-        Rotation3D<> R = baseTCam.R();
-        makeS(R,S);
-        cout <<"S: " << S << endl;
-
-
+        A = JImg * S * J;
         //4: solve {J_img *  S(q) * J(q) * d_q = d_u} for d_q
-        //Make the eq to Ax=b
-        A = JImage * S * J;
-        cout <<"A: " << A << endl;
+        Eigen::JacobiSVD<Eigen::MatrixXf> SVD(A,Eigen::ComputeThinU | Eigen::ComputeThinV);
 
-       //Solve Ax=b
-        Eigen::JacobiSVD<Eigen::MatrixXf> svd(A, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        Dq = svd.solve(Du);
-
-        cout << "Dq: "<< Dq << endl;
-
-        cout << "q_old:"<< "Q[7]{";
-        for(int i = 0; i < 7; i++){
-             cout << q(i);
-             if(i != 6){
-                 cout << ", ";
-             }
-        }
-        cout << "}" << endl;
+        dq = SVD.solve(error);
+        cout << "dq: " << dq << endl;
 
         //5: add d_q to q
-        addDq(q,Dq);
+        cout << "Q: " << q << endl;
+        addDq(q,dq);
+        cout << "NewQ: " << q << endl;
 
-        cout << "q_new:"<< "Q[7]{";
-        for(int i = 0; i < 7; i++){
-             cout << q(i);
-             if(i != 6){
-                 cout << ", ";
-             }
-        }
-        cout << "}" << endl;
-
-        //6: computre new T(q)
+        //Update new q
         device->setQ(q,state);
 
-        current = Kinematics::frameTframe(camFrame,markerFrame,state);
+        cTM = camFrame->fTf(markerFrame, state);
 
-        cTw = Kinematics::frameTframe(camFrame,worldFrame, state);
+
+        //6: computre new T(q)
+
         //7: compute new d_u
-        getError(desired, current, Du, cTw);
-        cout << "new Du: " << Du(0) << " & " << Du(1) << endl;
+        getError(error, cTM);
+        cout << "Error: " << error << endl;
     }
-    return q;
 }
 
 vector<vector<double>> readMatFromFile(string str){
@@ -450,13 +382,11 @@ void SamplePlugin::timer() {
     //Q q_start = Q(7, 0, -0.651, -0.231, 1.761, 0, 0.42, 0);
     devicePA10->setQ(q_start,state);
     Q q = devicePA10->getQ(state);
-    cout << "Current Q: " << q(0) << ","<<q(1) << "," << q(2) << "," << q(3) << "," <<
-                             q(4) << "," << q(5) << "," << q(6) << endl;
 
-    //Find new q with newton raphson (algorithm 2 in robotics notes)
-    q = algorithm2(devicePA10, state, _wc, markerMotionSlow);
-    cout << "new Q: " << q(0) <<","<< q(1) << "," << q(2) << "," << q(3) << "," <<
-                         q(4) << "," << q(5) << "," << q(6) << endl;
+
+    //Find new q with newton raphson (algorithm 2 in robotics notes) automaticallu sets Q
+
+    algorithm2(devicePA10, state, _wc, markerMotionSlow);
 
 }
 
