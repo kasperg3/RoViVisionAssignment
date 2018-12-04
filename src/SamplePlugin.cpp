@@ -70,7 +70,7 @@ void SamplePlugin::initialize() {
     getRobWorkStudio()->stateChangedEvent().add(std::bind(&SamplePlugin::stateChangedListener, this, _1), this);
 
     // Auto load workcell
-    WorkCell::Ptr wc = WorkCellLoader::Factory::load("/home/kasper/RWworkspace/PA10WorkCell/ScenePA10RoVi1.wc.xml");
+    WorkCell::Ptr wc = WorkCellLoader::Factory::load("/home/kasper/RWworkspace/workcells/PA10WorkCell/ScenePA10RoVi1.wc.xml");
     getRobWorkStudio()->setWorkCell(wc);
 
     // Load Lena image
@@ -203,37 +203,32 @@ void getError(vector<vector<double>> vec, Transform3D<> current, Eigen::VectorXf
 
 
     double f = 823;
-    double x = current(0,3);
-    double y = current(1,3);
+    double x = current.P()[0];
+    double y = current.P()[1];
+    double z = current.P()[2];
 
     cout << "x: " << x << endl;
     cout << "y: " << y << endl;
 
 
-    double z = 0.5;
-
     Transform3D<> markerInWorld = getTFromMat(vec,0);
     Transform3D<> desired = camTWorld*markerInWorld;
-/*
-    Rotation3D<> Ry(cos(1), 0, sin(1), 0, 1, 0, -sin(1),0,cos(1));
-    Rotation3D<> Rx(1, 0, 0, 0, cos(0), -sin(0), 0, sin(0), cos(0));
-    Rotation3D<> Rz(cos(0), -sin(0), 0, sin(0), cos(0), 0, 0, 0, 1);
 
-    Rotation3D<> Rr = Rz*Ry*Rx*desired1.R();
+    cout << "Transform current: " << current << endl;
+    cout << "Transform desired: " << desired << endl;
 
-    Transform3D<> desired(desired1.P(),Rr);*/
-
-    cout << "Desired x: " << desired(0,3) << ", current x: " << current(0,3) << endl;
-    cout << "Desired y: " << desired(1,3) << ", current y: " << current(1,3) << endl;
-    cout << "Desired z: " << desired(2,3) << ", current z: " << current(2,3) << endl;
     //Desired - current
-    double dX = desired(0,3) - current(0,3);
-    double dY = desired(1,3) - current(1,3);
-    double dZ = desired(2,3) - current(2,3);
+    Vector3D<> dP = desired.P()-current.P();
+    double dX = dP[0];
+    double dY = dP[1];
+    double dZ = dP[2];
 
     double dThetaZ = 0.5 * ((desired(2,1) * current(1,2)) - (desired(1,2) * (current(2,1))));
     double dThetaY = 0.5 * ((desired(0,2) * current(2,0)) - (desired(2,0) * (current(0,2))));
     double dThetaX = 0.5 * ((desired(1,0) * current(0,1)) - (desired(0,1) * (current(1,0))));
+
+    double u = (f*x)/z;
+    double v = (f*y)/z;
 
     cout << "dX: " << dX << endl;
     cout << "dY: " << dY << endl;
@@ -243,8 +238,11 @@ void getError(vector<vector<double>> vec, Transform3D<> current, Eigen::VectorXf
     cout << "dthetaZ: " << dThetaZ << endl;
 
 
-    double du = (f/z)*(-dX-z*dThetaY+y*dThetaZ)-((f*x)/pow(z,2))*(-dZ-y*dThetaX+x*dThetaY);
-    double dv = (f/z)*(-dY-x*dThetaZ+z*dThetaX)-((f*y)/pow(z,2))*(-dZ-y*dThetaX+x*dThetaY);
+    double du = (-(f/z)*dX) + ((u/z)*dZ) + (((u*v)/f)*dThetaX) - ((pow(f,2) + pow(u,2))/f)*dThetaY + v*dThetaZ;
+    double dv = (-(f/z)*dY) + ((v/z)*dZ) + ((pow(f,2) + pow(v,2))/f)*dThetaX - (((u*v)/f)*dThetaY) - u*dThetaZ;
+
+    //double du = (f/z)*(-dX-z*dThetaY+y*dThetaZ)-((f*x)/pow(z,2))*(-dZ-y*dThetaX+x*dThetaY);
+    //double dv = (f/z)*(-dY-x*dThetaZ+z*dThetaX)-((f*y)/pow(z,2))*(-dZ-y*dThetaX+x*dThetaY);
 
     error(0) = du;
     error(1) = dv;
@@ -307,19 +305,19 @@ void addDq(Q &q, Eigen::VectorXf d_q ){
 }
 
 
- Q algorithm2(Device::Ptr &device, State state, WorkCell::Ptr _wc, vector<vector<double>> desired){
+ Q algorithm2(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, vector<vector<double>> desired){
     //init:
-    double displacementEpsilon = 0.1;
+    double displacementEpsilon = 10;
     Q q = device->getQ(state);
     Eigen::VectorXf Dq(7);
-    Eigen::MatrixXf A(2,1);
+    Eigen::MatrixXf A(2,7);
     Eigen::MatrixXf J(6,7);
     Eigen::MatrixXf JImage(2,6);
     Eigen::VectorXf Du(2);
     Eigen::MatrixXf S = Eigen::MatrixXf::Zero(6,6);
     Frame* worldFrame = _wc->getWorldFrame();
+    MovableFrame* camFrame =(MovableFrame*) _wc->findFrame("CameraSim");
     Frame* baseFrame = device->getBase();
-    Frame* camFrame = _wc->findFrame("Camera");
     MovableFrame* markerFrame = _wc->findFrame<MovableFrame>("Marker");
     Transform3D<> current = Kinematics::frameTframe(camFrame, markerFrame, state);
     Transform3D<> cTw = Kinematics::frameTframe(camFrame,worldFrame, state);
@@ -333,8 +331,8 @@ void addDq(Q &q, Eigen::VectorXf d_q ){
     getError(desired, current, Du, cTw);
     cout << "Du: " << Du(0) << " & " << Du(1) << endl;
     //2: while difference d_u is > epsilon, do:
-    while( Du.norm() > displacementEpsilon){
-    //for(int x = 0; x < 5; x++){
+    //while( Du.norm() > displacementEpsilon){
+    for(int x = 0; x < 10; x++){
         cout << "--------------------------" << endl;
         cout << "Norm of Du: " << Du.norm() << endl;
 
@@ -353,7 +351,8 @@ void addDq(Q &q, Eigen::VectorXf d_q ){
 
 
         //Compute S(q)
-        Transform3D<> baseTCam = device->baseTframe(camFrame,state);
+        Frame* baseFrame = device->getBase();
+        Transform3D<> baseTCam = Kinematics::frameTframe(baseFrame,camFrame, state);
         Rotation3D<> R = baseTCam.R();
         makeS(R,S);
         cout <<"S: " << S << endl;
@@ -379,8 +378,6 @@ void addDq(Q &q, Eigen::VectorXf d_q ){
         }
         cout << "}" << endl;
 
-
-
         //5: add d_q to q
         addDq(q,Dq);
 
@@ -395,6 +392,7 @@ void addDq(Q &q, Eigen::VectorXf d_q ){
 
         //6: computre new T(q)
         device->setQ(q,state);
+
         current = Kinematics::frameTframe(camFrame,markerFrame,state);
 
         cTw = Kinematics::frameTframe(camFrame,worldFrame, state);
