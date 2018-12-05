@@ -70,12 +70,12 @@ void SamplePlugin::initialize() {
     getRobWorkStudio()->stateChangedEvent().add(std::bind(&SamplePlugin::stateChangedListener, this, _1), this);
 
     // Auto load workcell
-    WorkCell::Ptr wc = WorkCellLoader::Factory::load("/home/kasper/RWworkspace/workcells/PA10WorkCell/ScenePA10RoVi1.wc.xml");
+    WorkCell::Ptr wc = WorkCellLoader::Factory::load("/home/student/projects/robwork/RobWork/PA10WorkCell/ScenePA10RoVi1.wc.xml");
     getRobWorkStudio()->setWorkCell(wc);
 
     // Load Lena image
     Mat im, image;
-    im = imread("/home/kasper/RWworkspace/SamplePluginPA10/src/lena.bmp", CV_LOAD_IMAGE_COLOR); // Read the file
+    im = imread("/home/student/projects/robwork/RobWork/SamplePluginPA10/src/lena.bmp", CV_LOAD_IMAGE_COLOR); // Read the file
     cvtColor(im, image, CV_BGR2RGB); // Switch the red and blue color channels
     if(! image.data ) {
         RW_THROW("Could not open or find the image: please modify the file path in the source code!");
@@ -160,23 +160,22 @@ void SamplePlugin::btnPressed() {
         log().info() << "Button 0\n";
         // Set a new texture (one pixel = 1 mm)
         Image::Ptr image;
-        image = ImageLoader::Factory::load("/home/kasper/RWworkspace/SamplePluginPA10/markers/Marker1.ppm");
+        image = ImageLoader::Factory::load("/home/student/projects/robwork/RobWork/SamplePluginPA10/markers/Marker1.ppm");
         _textureRender->setImage(*image);
-        image = ImageLoader::Factory::load("/home/kasper/RWworkspace/SamplePluginPA10/backgrounds/color1.ppm");
+        image = ImageLoader::Factory::load("/home/student/projects/robwork/RobWork/SamplePluginPA10/backgrounds/color1.ppm");
         _bgRender->setImage(*image);
         getRobWorkStudio()->updateAndRepaint();
     } else if(obj==_btn1){
         log().info() << "Button 1\n";
         // Toggle the timer on and off
         if (!_timer->isActive())
-            _timer->start(100); // run 10 Hz
+            _timer->start(0.1); // run 10 Hz
         else
             _timer->stop();
     } else if(obj==_spinBox){
         log().info() << "spin value:" << _spinBox->value() << "\n";
     }
 }
-
 Transform3D<> getTFromMat(vector<vector<double>> m, int lN){
     Vector3D<> posVec(m[lN][0]
                      ,m[lN][1]
@@ -290,15 +289,17 @@ void addDq(Q &q, Eigen::VectorXf d_q ){
 
     //1: Compute difference d_u in current and Desired
     getError(error, cTM);
-    cout << "--------------START--------------" << endl;
-    cout << "Error: " << error(0) << ", " << error(1) << endl;
+
+
+    //cout << "--------------START--------------" << endl;
+    //cout << "Error: " << error(0) << ", " << error(1) << endl;
     //2:while difference d_u is > epsilon, do:
     //for(int i = 0; i < 3; i++){
     while(error.norm() > displacementEpsilon){
 
         cTW = camFrame->fTf(worldFrame, state);
 
-        cout << "----------------------------" << endl;
+        //cout << "----------------------------" << endl;
         //3: compute J(q)
         Jacobian tmpJ = device->baseJframe(camFrame,state);
         JTMatrix(tmpJ,J);
@@ -314,12 +315,12 @@ void addDq(Q &q, Eigen::VectorXf d_q ){
         Eigen::JacobiSVD<Eigen::MatrixXf> SVD(A,Eigen::ComputeThinU | Eigen::ComputeThinV);
 
         dq = SVD.solve(error);
-        cout << "dq: " << dq << endl;
+        //cout << "dq: " << dq << endl;
 
         //5: add d_q to q
-        cout << "Q: " << q << endl;
+        //cout << "Q: " << q << endl;
         addDq(q,dq);
-        cout << "NewQ: " << q << endl;
+        //cout << "NewQ: " << q << endl;
 
         //Update new q
         device->setQ(q,state);
@@ -331,7 +332,6 @@ void addDq(Q &q, Eigen::VectorXf d_q ){
 
         //7: compute new d_u
         getError(error, cTM);
-        cout << "Error: " << error << endl;
     }
 }
 
@@ -351,8 +351,42 @@ vector<vector<double>> readMatFromFile(string str){
    return Numbers;
 }
 
-int i = 0;
+void velocityConstraints(Q currentQ, Q newQ, double time, Device::Ptr &device, State &state){
+    Q constraints = device->getVelocityLimits(); //Rad/s
+    Q adjustedQ = newQ;
+    Q difference = newQ - currentQ;
 
+    for(size_t i = 0; i < currentQ.size(); i++){
+        if(((constraints(i)*time) - abs(difference(i))) < 0){
+/*
+            cout << "Current Q: " << currentQ << endl;
+            cout << "New Q    : " << newQ << endl;
+            cout << "Velocity constrains of Q: " << constraints*time << endl;
+            cout << "VELOCITY EXCEEDED FOR Q" << i << endl;
+*/
+            if(difference(i) > 0){
+                adjustedQ(i) = currentQ(i) + (time * constraints(i));
+            }
+            else {
+                adjustedQ(i) = currentQ(i) - (time * constraints(i));
+            }
+
+            //cout << "Q was adjusted to " << adjustedQ(i) << " from: " << newQ(i) << endl;
+        }
+    }
+    device->setQ(adjustedQ,state);
+}
+
+int i = 0;
+Eigen::VectorXf errorVec(2);
+double currentError = 0;
+double highestError = 0;
+double t = 1;
+int timeIndex = 0;
+
+vector<vector<double>> markers = readMatFromFile("/home/student/projects/robwork/RobWork/SamplePluginPA10/motions/MarkerMotionSlow.txt");
+vector<Q> savedQ;
+vector<Transform3D<>> savedToolPose;
 
 void SamplePlugin::timer() {
     if (_framegrabber != NULL) {
@@ -382,22 +416,92 @@ void SamplePlugin::timer() {
     MovableFrame* markerFrame = _wc->findFrame<MovableFrame>("Marker");
 
     //Create lua files to execute simulation
-    vector<vector<double>> markerMotionSlow = readMatFromFile("/home/kasper/RWworkspace/SamplePluginPA10/motions/MarkerMotionSlow.txt");
+
 
     //writeLuaFile(markerMotionSlow, "");
 
 
     //Find new q with newton raphson (algorithm 2 in robotics notes) automaticallu sets Q
-    algorithm2(devicePA10, _state, _wc, markerMotionSlow);
-    markerFrame->setTransform(getTFromMat(markerMotionSlow,i),_state);
+    Q currentQ = devicePA10->getQ(_state);
+    algorithm2(devicePA10, _state, _wc, markers);
 
+    Q newQ = devicePA10->getQ(_state);
+    double timeSteps = t; //sec
+    velocityConstraints(currentQ, newQ, timeSteps ,devicePA10, _state);
+
+    //check error after velocity constraints
+    Frame* camFrame = _wc->findFrame("CameraSim");
+    Transform3D<> cTM = camFrame->fTf(markerFrame, _state);
+    getError(errorVec, cTM);
+    currentError = errorVec.norm();
+
+    if(currentError > highestError){
+        //cout << "Index error: " << i << endl;
+        highestError = currentError;
+        //cout << "New highest: " << highestError << endl;
+    }
+    savedQ.push_back(devicePA10->getQ(_state));
+
+
+    Frame* baseFrame = devicePA10->getBase();
+    Frame* toolFrame = _wc->findFrame("Tool");
+    Transform3D<> bTT = baseFrame->fTf(toolFrame,_state);
+    Vector3D<> v = bTT.P();
+    //cout << v(1) << endl;
+
+    savedToolPose.push_back(bTT);
+
+    markerFrame->setTransform(getTFromMat(markers,i),_state);
     getRobWorkStudio()->setState(_state);
     i++;
+
+    //Test of error and timesteps
+
+    if(i == markers.size()-1){
+
+        for( int joint = 0; joint < 7; joint++){
+            cout << "Q" << joint << " = [";
+            for(size_t j = 0; j < savedQ.size(); j++){
+                cout << savedQ[j][joint] << " ";
+            }
+            cout << "];" << endl;
+        }
+
+        for( int k = 0; k < 6; k++){
+            cout << "T" << k << " = [";
+            for(int j = 0; j < savedQ.size(); j++){
+                if(k <= 2){
+                    Vector3D<> v = savedToolPose[j].P();
+                    cout <<  v(k) << " ";
+                }
+                else{
+                    Rotation3D<> r = savedToolPose[j].R();
+                    RPY<> angles(r);
+                    cout << angles((k-3)) << " ";
+                }
+            }
+            cout << "];" << endl;
+        }
+
+
+        cout << "highest error: " << highestError << endl;
+        cout << "Timestep: " << t << endl;
+        cout << "test" << endl;
+        i = 0;
+        //timeIndex++; // Index for time
+        //highestError = 0;
+        t -= 0.05;
+        //Q qRestart(7,0,-0.65,0,1.8,0,0.42,0);
+        _state = _wc->getDefaultState();
+        getRobWorkStudio()->setState(_state);
+    }
+
 }
 
 void SamplePlugin::stateChangedListener(const State& state) {
   _state = state;
 }
+
 
 
 
