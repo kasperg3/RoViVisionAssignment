@@ -15,7 +15,7 @@
 #include <fstream>
 #include <Eigen/Core>
 #include <Eigen/Dense>
-
+#include <rw/math/LinearAlgebra.hpp>
 
 
 using namespace rw::common;
@@ -35,7 +35,6 @@ using namespace std::placeholders;
 //own ns
 using namespace rw::math;
 using namespace std;
-
 
 
 SamplePlugin::SamplePlugin():
@@ -70,12 +69,12 @@ void SamplePlugin::initialize() {
     getRobWorkStudio()->stateChangedEvent().add(std::bind(&SamplePlugin::stateChangedListener, this, _1), this);
 
     // Auto load workcell
-    WorkCell::Ptr wc = WorkCellLoader::Factory::load("/home/student/projects/robwork/RobWork/PA10WorkCell/ScenePA10RoVi1.wc.xml");
+    WorkCell::Ptr wc = WorkCellLoader::Factory::load("/home/kasper/RWworkspace/workcells/PA10WorkCell/ScenePA10RoVi1.wc.xml");
     getRobWorkStudio()->setWorkCell(wc);
 
     // Load Lena image
     Mat im, image;
-    im = imread("/home/student/projects/robwork/RobWork/SamplePluginPA10/src/lena.bmp", CV_LOAD_IMAGE_COLOR); // Read the file
+    im = imread("/home/kasper/RWworkspace/SamplePluginPA10/src/lena.bmp", CV_LOAD_IMAGE_COLOR); // Read the file
     cvtColor(im, image, CV_BGR2RGB); // Switch the red and blue color channels
     if(! image.data ) {
         RW_THROW("Could not open or find the image: please modify the file path in the source code!");
@@ -148,7 +147,7 @@ void SamplePlugin::close() {
 }
 
 Mat SamplePlugin::toOpenCVImage(const Image& img) {
-    Mat res(img.getHeight(),img.getWidth(), CV_8SC3);
+    Mat res(img.getHeight(),img.getWidth(), CV_8UC3);
     res.data = (uchar*)img.getImageData();
     return res;
 }
@@ -160,16 +159,16 @@ void SamplePlugin::btnPressed() {
         log().info() << "Button 0\n";
         // Set a new texture (one pixel = 1 mm)
         Image::Ptr image;
-        image = ImageLoader::Factory::load("/home/student/projects/robwork/RobWork/SamplePluginPA10/markers/Marker1.ppm");
+        image = ImageLoader::Factory::load("/home/kasper/RWworkspace/SamplePluginPA10/markers/Marker1.ppm");
         _textureRender->setImage(*image);
-        image = ImageLoader::Factory::load("/home/student/projects/robwork/RobWork/SamplePluginPA10/backgrounds/color1.ppm");
+        image = ImageLoader::Factory::load("/home/kasper/RWworkspace/SamplePluginPA10/backgrounds/color1.ppm");
         _bgRender->setImage(*image);
         getRobWorkStudio()->updateAndRepaint();
     } else if(obj==_btn1){
         log().info() << "Button 1\n";
         // Toggle the timer on and off
         if (!_timer->isActive())
-            _timer->start(0.1); // run 10 Hz
+            _timer->start(100); // run 10 Hz
         else
             _timer->stop();
     } else if(obj==_spinBox){
@@ -189,7 +188,7 @@ Transform3D<> getTFromMat(vector<vector<double>> m, int lN){
     Transform3D<> trans(posVec,rot3D);
     return trans;
 }
-void TTMatrix(Transform3D<> T, Eigen::MatrixXf &m){
+void TTMatrix(Transform3D<> T, Eigen::MatrixXd &m){
     int rows = 4;
     int columns = 4;
     for(int i = 0; i < rows; i++){
@@ -198,22 +197,34 @@ void TTMatrix(Transform3D<> T, Eigen::MatrixXf &m){
         }
     }
 }
-void getError(Eigen::VectorXf &error, Transform3D<> cTM){
-
+void getError(Eigen::VectorXd &error, Frame *markerFrame, State state, Frame *camFrame ){
     double f = 823;
-    double x = cTM.P()[0];
-    double y = cTM.P()[1];
     double z = 0.5;
 
-    double u = (f*x)/z;
-    double v = (f*y)/z;
+    Eigen::Vector4d p1(0.15, 0.15,0, 1);
+    Eigen::Vector4d p2(-0.15, 0.15, 0, 1);
+    Eigen::Vector4d p3(0.15, -0.15, 0, 1);
 
-    error(0) = u;
-    error(1) = v;
+    Eigen::Vector2d s1((-0.15*f)/z,(0.15*f)/z);
+    Eigen::Vector2d s2((0.15*f)/z,(0.15*f)/z);
+    Eigen::Vector2d s3((-0.15*f)/z,(-0.15*f)/z);
+
+    Transform3D<> cTM = camFrame->fTf(markerFrame, state);
+
+    Eigen::Vector4d current1 = cTM.e() * p1;
+    Eigen::Vector4d current2 = cTM.e() * p2;
+    Eigen::Vector4d current3 = cTM.e() * p3;
+
+    error(0) = s1[0] - (current1[0]*f)/z;
+    error(1) = s1[1] - (current1[1]*f)/z;
+    error(2) = s2[0] - (current2[0]*f)/z;
+    error(3) = s2[1] - (current2[1]*f)/z;
+    error(4) = s3[0] - (current3[0]*f)/z;
+    error(5) = s3[1] - (current3[1]*f)/z;
 }
 
-Eigen::MatrixXf makeS(Rotation3D<> R){
-    Eigen::MatrixXf S = Eigen::MatrixXf::Zero(6,6);
+Eigen::MatrixXd makeS(Rotation3D<> R){
+    Eigen::MatrixXd S = Eigen::MatrixXd::Zero(6,6);
     for(int i = 0; i < 3; i++){
         for(int j = 0; j < 3; j++){
             S(i,j) = R(i,j);
@@ -223,11 +234,23 @@ Eigen::MatrixXf makeS(Rotation3D<> R){
     return S.transpose();
 }
 
-void getImageJacobian(Transform3D<> camTrans, Eigen::MatrixXf &Jimg){
+void getImageJacobian(Eigen::MatrixXd &Jimg, Frame *markerFrame, State state, Frame *camFrame ){
     int f = 823;
     double z = 0.5;
-    int u = (f * camTrans(0,3))/z;
-    int v = (f * camTrans(1,3))/z;
+    int u = 0;
+    int v = 0;
+    Transform3D<> cTM = camFrame->fTf(markerFrame, state);
+    Eigen::Vector4d p1(0.15, 0.15,0, 1);
+    Eigen::Vector4d p2(-0.15, 0.15, 0, 1);
+    Eigen::Vector4d p3(0.15, -0.15, 0, 1);
+
+
+    Eigen::Vector4d current1 = cTM.e() * p1;
+    Eigen::Vector4d current2 = cTM.e() * p2;
+    Eigen::Vector4d current3 = cTM.e() * p3;
+
+    u = (current1[0]*f)/z;
+    v = (current1[1]*f)/z;
 
     Jimg(0,0) = (-f)/z;
     Jimg(0,1) = 0;
@@ -242,9 +265,43 @@ void getImageJacobian(Transform3D<> camTrans, Eigen::MatrixXf &Jimg){
     Jimg(1,3) =(pow(f,2)+pow(v,2))/f;
     Jimg(1,4) =-(u*v)/f;
     Jimg(1,5) =-u;
+
+    u = (current2[0]*f)/z;
+    v = (current2[1]*f)/z;
+
+    Jimg(2,0) = (-f)/z;
+    Jimg(2,1) = 0;
+    Jimg(2,2) = u/z;
+    Jimg(2,3) = (u*v)/f;
+    Jimg(2,4) =-(pow(f,2)+pow(u,2))/f;
+    Jimg(2,5) =v;
+
+    Jimg(3,0) =0;
+    Jimg(3,1) =(-f)/z;
+    Jimg(3,2) =v/z;
+    Jimg(3,3) =(pow(f,2)+pow(v,2))/f;
+    Jimg(3,4) =-(u*v)/f;
+    Jimg(3,5) =-u;
+
+    u = (current3[0]*f)/z;
+    v = (current3[1]*f)/z;
+
+    Jimg(4,0) = (-f)/z;
+    Jimg(4,1) = 0;
+    Jimg(4,2) = u/z;
+    Jimg(4,3) = (u*v)/f;
+    Jimg(4,4) =-(pow(f,2)+pow(u,2))/f;
+    Jimg(4,5) =v;
+
+    Jimg(5,0) =0;
+    Jimg(5,1) =(-f)/z;
+    Jimg(5,2) =v/z;
+    Jimg(5,3) =(pow(f,2)+pow(v,2))/f;
+    Jimg(5,4) =-(u*v)/f;
+    Jimg(5,5) =-u;
 }
 
-void JTMatrix(Jacobian J, Eigen::MatrixXf &m){
+void JTMatrix(Jacobian J, Eigen::MatrixXd &m){
     int rows = J.size1();
     int columns = J.size2();
     for(int i = 0; i < rows; i++){
@@ -255,9 +312,7 @@ void JTMatrix(Jacobian J, Eigen::MatrixXf &m){
 }
 
 
-
-
-void addDq(Q &q, Eigen::VectorXf d_q ){
+void addDq(Q &q, Eigen::VectorXd d_q ){
     int joints = 7;
     for(int i = 0; i < joints; i++){
        // cout << "addDq func: Before adding:Q" << i << ": " << q(i) << endl;
@@ -269,37 +324,31 @@ void addDq(Q &q, Eigen::VectorXf d_q ){
 }
 
 
- void algorithm2(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, vector<vector<double>> desired){
+ void algorithm2(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, vector<Vec2i> points){
     //init:
-    double displacementEpsilon = 1;
-    Eigen::VectorXf error(2);
-    Frame* camFrame = _wc->findFrame("CameraSim");
+    double displacementEpsilon = 10;
+    Eigen::VectorXd error(6);
+    Frame* camFrame = _wc->findFrame("Camera");
     Frame* worldFrame = _wc->findFrame("WORLD");
     Frame* markerFrame = _wc->findFrame("Marker");
-    Eigen::MatrixXf J(6,7);
-    Eigen::MatrixXf S(6,6);
-    Eigen::MatrixXf JImg(2,6);
-    Eigen::MatrixXf A(2,7);
-    Eigen::VectorXf dq(7);
+    Eigen::MatrixXd J(6,7);
+    Eigen::MatrixXd S(6,6);
+    Eigen::MatrixXd JImg(6,6);
+    Eigen::MatrixXd Z(6,7);
+    Eigen::MatrixXd ZT(7,6);
+    Eigen::VectorXd dq(7);
     Q q = device->getQ(state);
 
-    //
-    Transform3D<> cTW = camFrame->fTf(worldFrame, state);
     Transform3D<> cTM = camFrame->fTf(markerFrame, state);
-
     //1: Compute difference d_u in current and Desired
-    getError(error, cTM);
+    getError(error, markerFrame,state, camFrame);
 
 
-    //cout << "--------------START--------------" << endl;
-    //cout << "Error: " << error(0) << ", " << error(1) << endl;
+    cout << "--------------START--------------" << endl;
+    cout << "Error: " << error << endl;
     //2:while difference d_u is > epsilon, do:
-    //for(int i = 0; i < 3; i++){
+    //for(int i = 0; i < 1; i++){
     while(error.norm() > displacementEpsilon){
-
-        cTW = camFrame->fTf(worldFrame, state);
-
-        //cout << "----------------------------" << endl;
         //3: compute J(q)
         Jacobian tmpJ = device->baseJframe(camFrame,state);
         JTMatrix(tmpJ,J);
@@ -308,30 +357,29 @@ void addDq(Q &q, Eigen::VectorXf d_q ){
         S = makeS(device->baseTframe(camFrame,state).R());
 
         //Compute J image
-        getImageJacobian(camFrame->fTf(markerFrame,state),JImg);
+        getImageJacobian(JImg, markerFrame, state,camFrame);
+        cout << "J img: " << endl << JImg << endl;
 
-        A = JImg * S * J;
+        Z = JImg * S * J;
+        for(int i = 0; i < 7; i++){
+            for(int j = 0; j < 6; j++){
+               ZT(i,j) = Z(j,i);
+            }
+        }
+
         //4: solve {J_img *  S(q) * J(q) * d_q = d_u} for d_q
-        Eigen::JacobiSVD<Eigen::MatrixXf> SVD(A,Eigen::ComputeThinU | Eigen::ComputeThinV);
+        Eigen::JacobiSVD<Eigen::MatrixXd> SVD(Z,Eigen::ComputeThinU | Eigen::ComputeThinV);
 
         dq = SVD.solve(error);
-        //cout << "dq: " << dq << endl;
+        cout << "dq: " << dq << endl;
 
         //5: add d_q to q
-        //cout << "Q: " << q << endl;
         addDq(q,dq);
-        //cout << "NewQ: " << q << endl;
-
         //Update new q
         device->setQ(q,state);
-
-        cTM = camFrame->fTf(markerFrame, state);
-
-
-        //6: computre new T(q)
-
         //7: compute new d_u
-        getError(error, cTM);
+        getError(error, markerFrame,state, camFrame);
+        cout << "Error: " << error << endl;
     }
 }
 
@@ -378,13 +426,13 @@ void velocityConstraints(Q currentQ, Q newQ, double time, Device::Ptr &device, S
 }
 
 int i = 0;
-Eigen::VectorXf errorVec(2);
+Eigen::VectorXd errorVec(2);
 double currentError = 0;
 double highestError = 0;
-double t = 1;
+double t = 0.05;
 int timeIndex = 0;
 
-vector<vector<double>> markers = readMatFromFile("/home/student/projects/robwork/RobWork/SamplePluginPA10/motions/MarkerMotionSlow.txt");
+vector<vector<double>> markers = readMatFromFile("/home/kasper/RWworkspace/SamplePluginPA10/motions/MarkerMotionFast.txt");
 vector<Q> savedQ;
 vector<Transform3D<>> savedToolPose;
 
@@ -406,59 +454,44 @@ void SamplePlugin::timer() {
         unsigned int maxW = 400;
         unsigned int maxH = 800;
         _label->setPixmap(p.scaled(maxW,maxH,Qt::KeepAspectRatio));
-
-
-
     }
 
 
     Device::Ptr devicePA10 = _wc->findDevice("PA10");
     MovableFrame* markerFrame = _wc->findFrame<MovableFrame>("Marker");
 
-    //Create lua files to execute simulation
-
-
-    //writeLuaFile(markerMotionSlow, "");
+    //Make function that gets points
+    vector<Vec2i> points;
 
 
     //Find new q with newton raphson (algorithm 2 in robotics notes) automaticallu sets Q
     Q currentQ = devicePA10->getQ(_state);
-    algorithm2(devicePA10, _state, _wc, markers);
+    algorithm2(devicePA10, _state, _wc, points);
 
     Q newQ = devicePA10->getQ(_state);
     double timeSteps = t; //sec
     velocityConstraints(currentQ, newQ, timeSteps ,devicePA10, _state);
 
     //check error after velocity constraints
-    Frame* camFrame = _wc->findFrame("CameraSim");
-    Transform3D<> cTM = camFrame->fTf(markerFrame, _state);
-    getError(errorVec, cTM);
-    currentError = errorVec.norm();
+    Frame* camFrame = _wc->findFrame("Camera");
 
+    //getError(errorVec, cTM);
+    //currentError = errorVec.norm();
     if(currentError > highestError){
         //cout << "Index error: " << i << endl;
         highestError = currentError;
         //cout << "New highest: " << highestError << endl;
     }
     savedQ.push_back(devicePA10->getQ(_state));
+    savedToolPose.push_back(devicePA10->baseTend(_state));
 
-
-    Frame* baseFrame = devicePA10->getBase();
-    Frame* toolFrame = _wc->findFrame("Tool");
-    Transform3D<> bTT = baseFrame->fTf(toolFrame,_state);
-    Vector3D<> v = bTT.P();
-    //cout << v(1) << endl;
-
-    savedToolPose.push_back(bTT);
 
     markerFrame->setTransform(getTFromMat(markers,i),_state);
     getRobWorkStudio()->setState(_state);
     i++;
-
+/*
     //Test of error and timesteps
-
     if(i == markers.size()-1){
-
         for( int joint = 0; joint < 7; joint++){
             cout << "Q" << joint << " = [";
             for(size_t j = 0; j < savedQ.size(); j++){
@@ -469,15 +502,13 @@ void SamplePlugin::timer() {
 
         for( int k = 0; k < 6; k++){
             cout << "T" << k << " = [";
-            for(int j = 0; j < savedQ.size(); j++){
-                if(k <= 2){
-                    Vector3D<> v = savedToolPose[j].P();
-                    cout <<  v(k) << " ";
-                }
+            for(size_t j = 0; j < savedQ.size(); j++){
+                if(k > 2)
+                    cout << savedToolPose[j](k,3) << " ";
                 else{
-                    Rotation3D<> r = savedToolPose[j].R();
-                    RPY<> angles(r);
-                    cout << angles((k-3)) << " ";
+                    //RPY tmp(savedToolPose[j].R());
+
+                    //cout << tmp(k-3) << " ";
                 }
             }
             cout << "];" << endl;
@@ -494,7 +525,7 @@ void SamplePlugin::timer() {
         //Q qRestart(7,0,-0.65,0,1.8,0,0.42,0);
         _state = _wc->getDefaultState();
         getRobWorkStudio()->setState(_state);
-    }
+    }*/
 
 }
 
