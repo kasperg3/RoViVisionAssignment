@@ -18,6 +18,7 @@
 #include <rw/math/LinearAlgebra.hpp>
 
 #include "seq2.hpp"
+#include <ctime>
 
 using namespace rw::common;
 using namespace rw::graphics;
@@ -419,54 +420,39 @@ void algorithm2_1point(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, Ve
     }
     else{
         getError1pointVision(error,point);
-        cout << "Using vision for error" << endl;
+        //cout << "Using vision for error" << endl;
     }
 
     //3: compute J(q)'
     Jacobian tmpJ = device->baseJframe(camFrame,state);
     JTMatrix(tmpJ,J);
-    cout << "J: " << J << endl;
 
     //Compute S
     S = makeS(device->baseTframe(camFrame,state).R());
-    cout << "S: " << S << endl;
+
     //Compute J image
     if(useVision == false){
         getImageJacobian1point(JImg, markerFrame, state,camFrame);
     }
     else{
         getImageJacobian1pointVision(JImg, point);
-        cout << "Using vision J" << endl;
+        //cout << "Using vision J" << endl;
     }
-    cout << "J img: " << endl << JImg << endl;
-
     Z = JImg * S * J;
-    cout <<"Z: "<< Z << endl;
 
     ZT = Z.transpose();
 
     ZZT= Z*ZT;
-    //cout << "ZZT:" << ZZT << endl;
+
     inv = LinearAlgebra::pseudoInverse(ZZT);
-    //cout << "inv: " << inv << endl;
     Y = inv*error;
-    //cout <<"Y: " <<  Y<<endl;
     dq = ZT*Y;
-
-
-    //USING SVD
-    //Eigen::JacobiSVD<Eigen::MatrixXd> SVD(Z,Eigen::ComputeThinU | Eigen::ComputeThinV);
-
-    //dq = SVD.solve(error);
-
-    //cout << "dq: " << dq << endl;
 
     //5: add d_q to q
     addDq(q,dq);
+
     //Update new q
     device->setQ(q,state);
-
-
 }
 
  void algorithm2(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, vector<Vec2i> points){
@@ -491,51 +477,37 @@ void algorithm2_1point(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, Ve
     //1: Compute difference d_u in current and Desired
     getError(error, markerFrame,state, camFrame);
 
+    //3: compute J(q)
+    Jacobian tmpJ = device->baseJframe(camFrame,state);
+    JTMatrix(tmpJ,J);
 
-    cout << "--------------START--------------" << endl;
-    cout << "Error: " << error << endl;
-    //2:while difference d_u is > epsilon, do:
-    //for(int i = 0; i < 1; i++){
-    while(error.norm() > displacementEpsilon){
-        //3: compute J(q)
-        Jacobian tmpJ = device->baseJframe(camFrame,state);
-        JTMatrix(tmpJ,J);
+    //Compute S
+    S = makeS(device->baseTframe(camFrame,state).R());
 
-        //Compute S
-        S = makeS(device->baseTframe(camFrame,state).R());
+    //Compute J image
+    getImageJacobian(JImg, markerFrame, state,camFrame);
 
-        //Compute J image
-        getImageJacobian(JImg, markerFrame, state,camFrame);
-        cout << "J img: " << endl << JImg << endl;
-
-        Z = JImg * S * J;
-        for(int i = 0; i < 7; i++){
-            for(int j = 0; j < 6; j++){
-               ZT(i,j) = Z(j,i);
-            }
+    Z = JImg * S * J;
+    for(int i = 0; i < 7; i++){
+        for(int j = 0; j < 6; j++){
+            ZT(i,j) = Z(j,i);
         }
-
-
-        ZZT= Z*ZT;
-        inv = LinearAlgebra::pseudoInverse(ZZT);
-        Y = inv*error;
-        dq = ZT*Y;
-
-
-        //4: solve {J_img *  S(q) * J(q) * d_q = d_u} for d_q
-        Eigen::JacobiSVD<Eigen::MatrixXd> SVD(Z,Eigen::ComputeThinU | Eigen::ComputeThinV);
-
-        //dq = SVD.solve(error);
-        cout << "dq: " << dq << endl;
-
-        //5: add d_q to q
-        addDq(q,dq);
-        //Update new q
-        device->setQ(q,state);
-        //7: compute new d_u
-        getError(error, markerFrame,state, camFrame);
-        cout << "Error: " << error << endl;
     }
+
+    ZZT= Z*ZT;
+    inv = LinearAlgebra::pseudoInverse(ZZT);
+    Y = inv*error;
+    dq = ZT*Y;
+
+
+    //5: add d_q to q
+    addDq(q,dq);
+    //Update new q
+    device->setQ(q,state);
+    //7: compute new d_u
+
+
+
 }
 
 vector<vector<double>> readMatFromFile(string str){
@@ -580,16 +552,22 @@ void velocityConstraints(Q currentQ, Q newQ, double time, Device::Ptr &device, S
     device->setQ(adjustedQ,state);
 }
 
+
 int i = 0;
 Eigen::VectorXd errorVec(2);
 double currentError = 0;
 double highestError = 0;
-double t = 0.05;
+double t = 0.015 ;
 int timeIndex = 0;
+double algoRunTime = 0.174092;
 
-vector<vector<double>> markers = readMatFromFile("/home/kasper/RWworkspace/SamplePluginPA10/motions/MarkerMotionFast.txt");
+vector<vector<double>> markers = readMatFromFile("/home/kasper/RWworkspace/SamplePluginPA10/motions/MarkerMotionMedium.txt");
 vector<Q> savedQ;
 vector<Transform3D<>> savedToolPose;
+double timeSum = 0.0;
+vector<double> timeVec;
+vector<double> maxError;
+
 
 void SamplePlugin::timer() {
     Mat imflip;
@@ -617,15 +595,19 @@ void SamplePlugin::timer() {
 
     //Make function that gets points
     vector<Vec2i> points;
+    Vec2i point;
+    //Vision and timing
+    if(i < markers.size()){
+        clock_t start;
+        start = clock();
+        point = seq1Algo(imflip);
+        timeSum += (clock()-start);
+    }
 
-    //Vision
 
-    Vec2i point = seq1Algo(imflip);
-
-    //Find new q with newton raphson (algorithm 2 in robotics notes) automaticallu sets Q
     Q currentQ = devicePA10->getQ(_state);
     //algorithm2(devicePA10, _state, _wc, points);
-    algorithm2_1point(devicePA10, _state, _wc, point, true);
+    algorithm2_1point(devicePA10, _state, _wc, point, false);
     Q newQ = devicePA10->getQ(_state);
     double timeSteps = t; //sec
     velocityConstraints(currentQ, newQ, timeSteps ,devicePA10, _state);
@@ -633,12 +615,12 @@ void SamplePlugin::timer() {
     //check error after velocity constraints
     Frame* camFrame = _wc->findFrame("Camera");
 
-    //getError(errorVec, cTM);
-    //currentError = errorVec.norm();
+    getError1point(errorVec,markerFrame,_state,camFrame);
+    currentError = errorVec.norm();
     if(currentError > highestError){
         //cout << "Index error: " << i << endl;
         highestError = currentError;
-        //cout << "New highest: " << highestError << endl;
+        cout << "New highest: " << highestError << endl;
     }
     savedQ.push_back(devicePA10->getQ(_state));
     savedToolPose.push_back(devicePA10->baseTend(_state));
@@ -648,10 +630,12 @@ void SamplePlugin::timer() {
         getRobWorkStudio()->setState(_state);
         i++;
     }
-/*
+    else{
+        cout << "Average Vision Time: " << (timeSum/markers.size())/(CLOCKS_PER_SEC/1000) << "ms" << endl;
+    }
     //Test of error and timesteps
     if(i == markers.size()-1){
-        for( int joint = 0; joint < 7; joint++){
+   /*     for( int joint = 0; joint < 7; joint++){
             cout << "Q" << joint << " = [";
             for(size_t j = 0; j < savedQ.size(); j++){
                 cout << savedQ[j][joint] << " ";
@@ -661,30 +645,49 @@ void SamplePlugin::timer() {
 
         for( int k = 0; k < 6; k++){
             cout << "T" << k << " = [";
-            for(size_t j = 0; j < savedQ.size(); j++){
-                if(k > 2)
-                    cout << savedToolPose[j](k,3) << " ";
+            for(size_t j = 0; j < savedToolPose.size(); j++){
+                if(k <= 2){
+                    Vector3D<> v = savedToolPose[j].P();
+                    cout << v(k) << " ";
+                }
                 else{
-                    //RPY tmp(savedToolPose[j].R());
-
-                    //cout << tmp(k-3) << " ";
+                    Rotation3D<> r = savedToolPose[j].R();
+                    RPY<> angles(r);
+                    cout << angles((k-3)) << " ";
                 }
             }
             cout << "];" << endl;
         }
-
+*/
 
         cout << "highest error: " << highestError << endl;
         cout << "Timestep: " << t << endl;
-        cout << "test" << endl;
         i = 0;
+        timeVec.push_back(t);
+        maxError.push_back(highestError);
+
+            cout << "t = [ ";
+            for(int i = 0; i < timeVec.size(); i++){
+                cout << timeVec[i] << " ";
+            }
+            cout << "]";
+
+            cout << "error = [ ";
+            for(int i = 0; i < maxError.size(); i++){
+                cout << maxError[i] << " ";
+            }
+            cout << "]";
+
         //timeIndex++; // Index for time
         //highestError = 0;
-        t -= 0.05;
+        t -= 0.001;
+
         //Q qRestart(7,0,-0.65,0,1.8,0,0.42,0);
         _state = _wc->getDefaultState();
         getRobWorkStudio()->setState(_state);
-    }*/
+
+
+    }
 
 }
 

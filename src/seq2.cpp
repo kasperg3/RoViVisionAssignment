@@ -433,7 +433,7 @@ Vec2i seq1Algo(Mat img1, string pathToWrite){
     int correctedX = averageX - u;
     int correctedY = averageY - v;
 
-    cout << "X" << correctedX << "Y: "<< correctedY << endl;
+    //cout << "X" << correctedX << "Y: "<< correctedY << endl;
     showImage("drawing", img1,print, pathToWrite);
     return Vec2i(correctedX,correctedY);
 }
