@@ -223,6 +223,22 @@ void getError(Eigen::VectorXd &error, Frame *markerFrame, State state, Frame *ca
     error(5) = s3[1] - (current3[1]*f)/z;
 }
 
+void getError1point(Eigen::VectorXd &error, Frame *markerFrame, State state, Frame *camFrame ){
+     double f = 823;
+     Transform3D<> cTM = camFrame->fTf(markerFrame, state);
+     double x = -cTM.P()[0];
+     double y = -cTM.P()[1];
+     double z = 0.5;
+
+     double u = (f*x)/z;
+     double v = (f*y)/z;
+
+     error(0) = u;
+     error(1) = v;
+
+
+}
+
 Eigen::MatrixXd makeS(Rotation3D<> R){
     Eigen::MatrixXd S = Eigen::MatrixXd::Zero(6,6);
     for(int i = 0; i < 3; i++){
@@ -232,6 +248,29 @@ Eigen::MatrixXd makeS(Rotation3D<> R){
         }
     }
     return S.transpose();
+}
+void getImageJacobian1point(Eigen::MatrixXd &Jimg, Frame *markerFrame, State state, Frame *camFrame ){
+    int f = 823;
+    double z = 0.5;
+    Transform3D<> cTM = camFrame->fTf(markerFrame, state);
+    int u = -(f * cTM(0,3))/z;
+    int v = -(f * cTM(1,3))/z;
+
+    Jimg(0,0) = (-f)/z;
+    Jimg(0,1) = 0;
+    Jimg(0,2) = u/z;
+    Jimg(0,3) = (u*v)/f;
+    Jimg(0,4) =-(pow(f,2)+pow(u,2))/f;
+    Jimg(0,5) =v;
+
+    Jimg(1,0) =0;
+    Jimg(1,1) =(-f)/z;
+    Jimg(1,2) =v/z;
+    Jimg(1,3) =(pow(f,2)+pow(v,2))/f;
+    Jimg(1,4) =-(u*v)/f;
+    Jimg(1,5) =-u;
+
+
 }
 
 void getImageJacobian(Eigen::MatrixXd &Jimg, Frame *markerFrame, State state, Frame *camFrame ){
@@ -323,6 +362,71 @@ void addDq(Q &q, Eigen::VectorXd d_q ){
     }
 }
 
+void algorithm2_1point(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, Vec2i point){
+   //init:
+   Eigen::VectorXd error(2);
+   Frame* camFrame = _wc->findFrame("Camera");
+   Frame* worldFrame = _wc->findFrame("WORLD");
+   Frame* markerFrame = _wc->findFrame("Marker");
+   Eigen::MatrixXd J(6,7);
+   Eigen::MatrixXd S(6,6);
+   Eigen::MatrixXd JImg(2,6);
+   Eigen::MatrixXd Z(2,7);
+   Eigen::MatrixXd ZT(7,2);
+   Eigen::VectorXd dq(7);
+   Eigen::MatrixXd ZZT(2,2);
+   Eigen::MatrixXd inv(2,2);
+   Eigen::VectorXd Y(2);
+   Q q = device->getQ(state);
+
+   //1: Compute difference d_u in current and Desired
+   getError1point(error, markerFrame,state, camFrame);
+  //  cout << "First error "  << error << endl;
+
+   //2:while difference d_u is > epsilon, do:
+   //for(int i = 0; i < 1; i++){
+   //while(error.norm() > displacementEpsilon){
+       //3: compute J(q)'
+
+       Jacobian tmpJ = device->baseJframe(camFrame,state);
+       JTMatrix(tmpJ,J);
+       cout << "J: " << J << endl;
+
+       //Compute S
+       S = makeS(device->baseTframe(camFrame,state).R());
+        cout << "S: " << S << endl;
+       //Compute J image
+       getImageJacobian1point(JImg, markerFrame, state,camFrame);
+       cout << "J img: " << endl << JImg << endl;
+
+       Z = JImg * S * J;
+       cout <<"Z: "<< Z << endl;
+
+       ZT = Z.transpose();
+
+       ZZT= Z*ZT;
+       //cout << "ZZT:" << ZZT << endl;
+       inv = LinearAlgebra::pseudoInverse(ZZT);
+       //cout << "inv: " << inv << endl;
+       Y = inv*error;
+       //cout <<"Y: " <<  Y<<endl;
+       dq = ZT*Y;
+
+
+       //USING SVD
+       //Eigen::JacobiSVD<Eigen::MatrixXd> SVD(Z,Eigen::ComputeThinU | Eigen::ComputeThinV);
+
+       //dq = SVD.solve(error);
+
+       //cout << "dq: " << dq << endl;
+
+       //5: add d_q to q
+       addDq(q,dq);
+       //Update new q
+       device->setQ(q,state);
+
+
+}
 
  void algorithm2(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, vector<Vec2i> points){
     //init:
@@ -472,12 +576,13 @@ void SamplePlugin::timer() {
 
     //Make function that gets points
     vector<Vec2i> points;
+    Vec2i point;
 
 
     //Find new q with newton raphson (algorithm 2 in robotics notes) automaticallu sets Q
     Q currentQ = devicePA10->getQ(_state);
-    algorithm2(devicePA10, _state, _wc, points);
-
+    //algorithm2(devicePA10, _state, _wc, points);
+    algorithm2_1point(devicePA10, _state, _wc, point);
     Q newQ = devicePA10->getQ(_state);
     double timeSteps = t; //sec
     velocityConstraints(currentQ, newQ, timeSteps ,devicePA10, _state);
