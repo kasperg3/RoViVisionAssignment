@@ -17,6 +17,7 @@
 #include <Eigen/Dense>
 #include <rw/math/LinearAlgebra.hpp>
 
+#include "seq2.hpp"
 
 using namespace rw::common;
 using namespace rw::graphics;
@@ -239,6 +240,15 @@ void getError1point(Eigen::VectorXd &error, Frame *markerFrame, State state, Fra
 
 }
 
+void getError1pointVision(Eigen::VectorXd &error, Vec2i point ){
+
+
+     error(0) = -point[0];
+     error(1) = -point[1];
+
+
+}
+
 Eigen::MatrixXd makeS(Rotation3D<> R){
     Eigen::MatrixXd S = Eigen::MatrixXd::Zero(6,6);
     for(int i = 0; i < 3; i++){
@@ -255,6 +265,30 @@ void getImageJacobian1point(Eigen::MatrixXd &Jimg, Frame *markerFrame, State sta
     Transform3D<> cTM = camFrame->fTf(markerFrame, state);
     int u = -(f * cTM(0,3))/z;
     int v = -(f * cTM(1,3))/z;
+
+    Jimg(0,0) = (-f)/z;
+    Jimg(0,1) = 0;
+    Jimg(0,2) = u/z;
+    Jimg(0,3) = (u*v)/f;
+    Jimg(0,4) =-(pow(f,2)+pow(u,2))/f;
+    Jimg(0,5) =v;
+
+    Jimg(1,0) =0;
+    Jimg(1,1) =(-f)/z;
+    Jimg(1,2) =v/z;
+    Jimg(1,3) =(pow(f,2)+pow(v,2))/f;
+    Jimg(1,4) =-(u*v)/f;
+    Jimg(1,5) =-u;
+
+
+}
+
+void getImageJacobian1pointVision(Eigen::MatrixXd &Jimg, Vec2i point){
+    int f = 823;
+    double z = 0.5;
+
+    int u = -point[0]; //- because of camera frame is oriented opposite of marker frame
+    int v = -point[1];
 
     Jimg(0,0) = (-f)/z;
     Jimg(0,1) = 0;
@@ -362,7 +396,7 @@ void addDq(Q &q, Eigen::VectorXd d_q ){
     }
 }
 
-void algorithm2_1point(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, Vec2i point){
+void algorithm2_1point(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, Vec2i point, bool useVision = false){
    //init:
    Eigen::VectorXd error(2);
    Frame* camFrame = _wc->findFrame("Camera");
@@ -379,51 +413,58 @@ void algorithm2_1point(Device::Ptr &device, State &state, WorkCell::Ptr &_wc, Ve
    Eigen::VectorXd Y(2);
    Q q = device->getQ(state);
 
-   //1: Compute difference d_u in current and Desired
-   getError1point(error, markerFrame,state, camFrame);
-  //  cout << "First error "  << error << endl;
+    //1: Compute difference d_u in current and Desired
+    if(useVision == false){
+        getError1point(error, markerFrame,state, camFrame);
+    }
+    else{
+        getError1pointVision(error,point);
+        cout << "Using vision for error" << endl;
+    }
 
-   //2:while difference d_u is > epsilon, do:
-   //for(int i = 0; i < 1; i++){
-   //while(error.norm() > displacementEpsilon){
-       //3: compute J(q)'
+    //3: compute J(q)'
+    Jacobian tmpJ = device->baseJframe(camFrame,state);
+    JTMatrix(tmpJ,J);
+    cout << "J: " << J << endl;
 
-       Jacobian tmpJ = device->baseJframe(camFrame,state);
-       JTMatrix(tmpJ,J);
-       cout << "J: " << J << endl;
+    //Compute S
+    S = makeS(device->baseTframe(camFrame,state).R());
+    cout << "S: " << S << endl;
+    //Compute J image
+    if(useVision == false){
+        getImageJacobian1point(JImg, markerFrame, state,camFrame);
+    }
+    else{
+        getImageJacobian1pointVision(JImg, point);
+        cout << "Using vision J" << endl;
+    }
+    cout << "J img: " << endl << JImg << endl;
 
-       //Compute S
-       S = makeS(device->baseTframe(camFrame,state).R());
-        cout << "S: " << S << endl;
-       //Compute J image
-       getImageJacobian1point(JImg, markerFrame, state,camFrame);
-       cout << "J img: " << endl << JImg << endl;
+    Z = JImg * S * J;
+    cout <<"Z: "<< Z << endl;
 
-       Z = JImg * S * J;
-       cout <<"Z: "<< Z << endl;
+    ZT = Z.transpose();
 
-       ZT = Z.transpose();
-
-       ZZT= Z*ZT;
-       //cout << "ZZT:" << ZZT << endl;
-       inv = LinearAlgebra::pseudoInverse(ZZT);
-       //cout << "inv: " << inv << endl;
-       Y = inv*error;
-       //cout <<"Y: " <<  Y<<endl;
-       dq = ZT*Y;
+    ZZT= Z*ZT;
+    //cout << "ZZT:" << ZZT << endl;
+    inv = LinearAlgebra::pseudoInverse(ZZT);
+    //cout << "inv: " << inv << endl;
+    Y = inv*error;
+    //cout <<"Y: " <<  Y<<endl;
+    dq = ZT*Y;
 
 
-       //USING SVD
-       //Eigen::JacobiSVD<Eigen::MatrixXd> SVD(Z,Eigen::ComputeThinU | Eigen::ComputeThinV);
+    //USING SVD
+    //Eigen::JacobiSVD<Eigen::MatrixXd> SVD(Z,Eigen::ComputeThinU | Eigen::ComputeThinV);
 
-       //dq = SVD.solve(error);
+    //dq = SVD.solve(error);
 
-       //cout << "dq: " << dq << endl;
+    //cout << "dq: " << dq << endl;
 
-       //5: add d_q to q
-       addDq(q,dq);
-       //Update new q
-       device->setQ(q,state);
+    //5: add d_q to q
+    addDq(q,dq);
+    //Update new q
+    device->setQ(q,state);
 
 
 }
@@ -551,6 +592,7 @@ vector<Q> savedQ;
 vector<Transform3D<>> savedToolPose;
 
 void SamplePlugin::timer() {
+    Mat imflip;
     if (_framegrabber != NULL) {
         // Get the image as a RW image
         Frame* cameraFrame = _wc->findFrame("CameraSim");
@@ -559,8 +601,7 @@ void SamplePlugin::timer() {
 
         // Convert to OpenCV image
         Mat im = toOpenCVImage(image);
-        Mat imflip;
-        cv::flip(im, imflip, 0);
+        cv::flip(im, imflip,0);
 
         // Show in QLabel
         QImage img(imflip.data, imflip.cols, imflip.rows, imflip.step, QImage::Format_RGB888);
@@ -576,13 +617,15 @@ void SamplePlugin::timer() {
 
     //Make function that gets points
     vector<Vec2i> points;
-    Vec2i point;
 
+    //Vision
+
+    Vec2i point = seq1Algo(imflip);
 
     //Find new q with newton raphson (algorithm 2 in robotics notes) automaticallu sets Q
     Q currentQ = devicePA10->getQ(_state);
     //algorithm2(devicePA10, _state, _wc, points);
-    algorithm2_1point(devicePA10, _state, _wc, point);
+    algorithm2_1point(devicePA10, _state, _wc, point, true);
     Q newQ = devicePA10->getQ(_state);
     double timeSteps = t; //sec
     velocityConstraints(currentQ, newQ, timeSteps ,devicePA10, _state);
