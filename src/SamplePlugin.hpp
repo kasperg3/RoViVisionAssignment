@@ -16,7 +16,6 @@
 
 // Qt
 #include <QTimer>
-
 #include "ui_SamplePlugin.h"
 
 class SamplePlugin: public rws::RobWorkStudioPlugin, private Ui::SamplePlugin

@@ -337,6 +337,9 @@ void addDq(Q &q, Eigen::VectorXd d_q ){
     Eigen::MatrixXd Z(6,7);
     Eigen::MatrixXd ZT(7,6);
     Eigen::VectorXd dq(7);
+    Eigen::MatrixXd ZZT(6,6);
+    Eigen::MatrixXd inv(6,6);
+    Eigen::VectorXd Y(6);
     Q q = device->getQ(state);
 
     Transform3D<> cTM = camFrame->fTf(markerFrame, state);
@@ -367,10 +370,17 @@ void addDq(Q &q, Eigen::VectorXd d_q ){
             }
         }
 
+
+        ZZT= Z*ZT;
+        inv = LinearAlgebra::pseudoInverse(ZZT);
+        Y = inv*error;
+        dq = ZT*Y;
+
+
         //4: solve {J_img *  S(q) * J(q) * d_q = d_u} for d_q
         Eigen::JacobiSVD<Eigen::MatrixXd> SVD(Z,Eigen::ComputeThinU | Eigen::ComputeThinV);
 
-        dq = SVD.solve(error);
+        //dq = SVD.solve(error);
         cout << "dq: " << dq << endl;
 
         //5: add d_q to q
@@ -485,10 +495,11 @@ void SamplePlugin::timer() {
     savedQ.push_back(devicePA10->getQ(_state));
     savedToolPose.push_back(devicePA10->baseTend(_state));
 
-
-    markerFrame->setTransform(getTFromMat(markers,i),_state);
-    getRobWorkStudio()->setState(_state);
-    i++;
+    if(i < markers.size()){
+        markerFrame->setTransform(getTFromMat(markers,i),_state);
+        getRobWorkStudio()->setState(_state);
+        i++;
+    }
 /*
     //Test of error and timesteps
     if(i == markers.size()-1){
